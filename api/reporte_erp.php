@@ -121,8 +121,12 @@ try {
     ]);
 
 } catch (Exception $e) {
-    http_response_code(500);
-    error_log("Error fatal en reporte_erp.php: ".$e->getMessage());
-    echo json_encode(['error' => 'Ocurrió un error en el servidor.', 'details' => $e->getMessage()]);
+    // No establecer código 500 para que el frontend lo procese como una respuesta válida con error
+    error_log("Error API GEMA en reporte_erp.php: ".$e->getMessage());
+    echo json_encode([
+        'data' => [],
+        'detalle_mapa' => new stdClass(),
+        'error' => 'La API externa (GEMA) no está disponible. No se pudieron cargar los datos para este período.'
+    ]);
 }
 ?>

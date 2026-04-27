@@ -33,7 +33,8 @@ function queryApiGema($sql_query)
     // 1. PREPARACIÓN DE LA URL
     // Codifica la consulta para que los caracteres especiales (espacios, =, etc.)
     // se conviertan a un formato seguro para URLs (ej. ' ' -> '%20').
-    $encoded_query = urlencode($sql_query);
+    // Usamos rawurlencode para evitar que los espacios sean +, lo que a veces confunde a ciertas APIs.
+    $encoded_query = rawurlencode($sql_query);
 
     // Construye la URL completa del endpoint de la API.
     $url = API_BASE_URL . "/select/?query=" . $encoded_query;

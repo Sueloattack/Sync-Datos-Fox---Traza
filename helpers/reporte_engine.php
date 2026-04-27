@@ -21,9 +21,7 @@ function generarReporte(
 ) {
     // --- PASO 1: CREACIÓN DE LA CONSULTA SQL ---
     
-    // Convertir fechas a formato VFP
-    $fecha_inicio_fox = "{^{$fecha_inicio}}";
-    $fecha_fin_fox = "{^{$fecha_fin}}";
+    // --- PASO 1: CREACIÓN DE LA CONSULTA SQL ---
     
     // Crear la cláusula WHERE de estatus
     $estatus_or_conditions = [];
@@ -32,15 +30,78 @@ function generarReporte(
     }
     $estatus_where_clause = "(" . implode(' OR ', $estatus_or_conditions) . ")";
 
-    $sql_gema = "
+    // SQL Template for Chunking (Placeholder for Dates)
+    $sql_gema_tpl = "
         d.gl_docn, d.quien, d.estatus1, c.fc_serie AS serie, c.fc_docn AS docn, c.tercero, d.vr_glosa, d.fecha_gl
         FROM gema10.d/salud/datos/glo_det d
         JOIN gema10.d/salud/datos/glo_cab c ON d.gl_docn = c.gl_docn
         WHERE {$estatus_where_clause}
-          AND d.freg BETWEEN {$fecha_inicio_fox} AND {$fecha_fin_fox}
+          AND d.freg BETWEEN {START_DATE} AND {END_DATE}
     ";
     
-    $itemsCandidatosVFP_raw = queryApiGema($sql_gema);
+    // Helper Functions for Chunking (Ported from reporte_consolidado.php)
+    if (!function_exists('getChunksEngine')) {
+        function getChunksEngine($startDate, $endDate, $days = 15) {
+            $chunks = [];
+            $start = new DateTime($startDate);
+            $end = new DateTime($endDate);
+            
+            while ($start <= $end) {
+                $chunkEnd = clone $start;
+                $chunkEnd->modify("+{$days} days");
+                
+                if ($chunkEnd > $end) {
+                    $chunkEnd = $end;
+                }
+                
+                $chunks[] = [
+                    'start' => $start->format('Y-m-d'),
+                    'end' => $chunkEnd->format('Y-m-d')
+                ];
+                
+                $start = clone $chunkEnd;
+                $start->modify('+1 day');
+            }
+            return $chunks;
+        }
+    }
+
+    if (!function_exists('chunkedQueryEngine')) {
+        function chunkedQueryEngine($sqlTemplate, $startStr, $endStr) {
+            $allData = [];
+            
+            $start = new DateTime($startStr);
+            $end = new DateTime($endStr);
+            $diff = $start->diff($end)->days;
+
+            // Optimization: If range is <= 45 days, execute single shot to preserve grouping integrity
+            // and match the logic of Consolidated Report.
+            if ($diff <= 45) {
+                 $cStart = "{^{$startStr}}";
+                 $cEnd = "{^{$endStr}}";
+                 $sql = str_replace(['{START_DATE}', '{END_DATE}'], [$cStart, $cEnd], $sqlTemplate);
+                 return queryApiGema($sql) ?: [];
+            }
+
+            // Otherwise, chunk it
+            $chunks = getChunksEngine($startStr, $endStr, 15);
+            
+            foreach ($chunks as $chunk) {
+                $cStart = "{^{$chunk['start']}}";
+                $cEnd = "{^{$chunk['end']}}";
+                
+                $sql = str_replace(['{START_DATE}', '{END_DATE}'], [$cStart, $cEnd], $sqlTemplate);
+                
+                $chunkData = queryApiGema($sql);
+                if ($chunkData) {
+                    $allData = array_merge($allData, $chunkData);
+                }
+            }
+            return $allData;
+        }
+    }
+
+    $itemsCandidatosVFP_raw = chunkedQueryEngine($sql_gema_tpl, $fecha_inicio, $fecha_fin);
     if (empty($itemsCandidatosVFP_raw)) {
         return ['data' => [], 'detalle_mapa' => []];
     }
@@ -48,15 +109,25 @@ function generarReporte(
     // --- PASO 2: LIMPIEZA Y AGRUPACIÓN INICIAL POR FACTURA ---
     $mapa_por_factura = [];
     foreach ($itemsCandidatosVFP_raw as $itemCrudo) {
-        $idCompuesto = strtoupper(trim($itemCrudo['serie'])) . '-' . strtoupper(trim($itemCrudo['docn'])) . '-' . strtoupper(trim($itemCrudo['tercero']));
+        $serie = trim($itemCrudo['serie'] ?? '');
+        $docn = trim($itemCrudo['docn'] ?? '');
+        $tercero = trim($itemCrudo['tercero'] ?? '');
+
+        $idCompuesto = strtoupper($serie) . '-' . strtoupper($docn) . '-' . strtoupper($tercero);
+        
+        // Evitar crear claves compuestas vacías si faltan datos esenciales
+        if (empty($serie) && empty($docn) && empty($tercero)) {
+            continue; // Saltar este registro si no tiene identificadores
+        }
+
         $mapa_por_factura[$idCompuesto][] = [
-            'serie'   => strtoupper(trim($itemCrudo['serie'])),
-            'docn'    => strtoupper(trim($itemCrudo['docn'])),
-            'tercero' => strtoupper(trim($itemCrudo['tercero'])),
-            'quien'   => strtoupper(trim($itemCrudo['quien'])),
-            'estatus1'  => strtolower(trim($itemCrudo['estatus1'])),
-            'vr_glosa' => (float)trim($itemCrudo['vr_glosa']),
-            'fecha_gl' => trim($itemCrudo['fecha_gl']), // Fecha de creación del ítem
+            'serie'   => strtoupper($serie),
+            'docn'    => strtoupper($docn),
+            'tercero' => strtoupper($tercero),
+            'quien'   => strtoupper(trim($itemCrudo['quien'] ?? '')),
+            'estatus1'  => strtolower(trim($itemCrudo['estatus1'] ?? '')),
+            'vr_glosa' => (float)($itemCrudo['vr_glosa'] ?? 0),
+            'fecha_gl' => trim($itemCrudo['fecha_gl'] ?? ''),
         ];
     }
 
@@ -76,7 +147,11 @@ function generarReporte(
         $sql_quien_names = "id, nombre FROM gema10.d/dgen/datos/maopera2 WHERE id IN ({$in_values_quien})";
         $quien_data = queryApiGema($sql_quien_names);
         foreach ($quien_data as $operador) {
-            $mapa_quien_nombres[trim($operador['id'])] = trim($operador['nombre']);
+            $id = trim($operador['id'] ?? '');
+            $nombre = trim($operador['nombre'] ?? 'Nombre no disponible');
+            if (!empty($id)) {
+                $mapa_quien_nombres[$id] = $nombre;
+            }
         }
     }
 
@@ -106,6 +181,9 @@ function generarReporte(
         foreach ($primary_items as $item) {
             $status = $item['estatus1'];
             $grupos_primarios[$status][] = $item;
+            if (!isset($fechas_por_grupo[$status])) {
+                $fechas_por_grupo[$status] = [];
+            }
             $fechas_por_grupo[$status][$item['fecha_gl']] = true;
         }
 
@@ -147,7 +225,8 @@ function generarReporte(
                 $resultadosAgregados[$responsable_final] = [
                     'responsable' => $responsable_final, 'cantidad_glosas_ingresadas' => 0,
                     'valor_total_glosas' => 0.0, 'desglose_ratificacion' => $desglose_base,
-                    'total_items' => 0, 'valor_glosado' => 0.0, 'valor_aceptado' => 0.0
+                    'total_items' => 0, 'valor_glosado' => 0.0, 'valor_aceptado' => 0.0,
+                    'valor_total_items' => 0.0
                 ];
             }
 
@@ -176,6 +255,9 @@ function generarReporte(
             }
             
             // Guardar en el mapa para el modal
+            if (!isset($mapa_para_detalles_final[$responsable_final])) {
+                $mapa_para_detalles_final[$responsable_final] = [];
+            }
             $mapa_para_detalles_final[$responsable_final][$evento_key] = [
                 'items' => $evento_items,
                 'ingresos' => 1 // Cada fila es 1 ingreso/evento

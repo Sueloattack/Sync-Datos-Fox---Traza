@@ -87,7 +87,7 @@ document.addEventListener('DOMContentLoaded', () => {
         return ranges;
     };
 
-    const aggregateMonthlyData = (responses, divisor = 1, periodoType = "Diario") => {
+    const aggregateMonthlyData = (responses, divisor = 1, periodoType = "Diario", reporte) => {
         if (!responses || responses.length === 0) {
             return { data: [], detalle_mapa: {} };
         }
@@ -97,68 +97,122 @@ document.addEventListener('DOMContentLoaded', () => {
 
         const aggregatedDataMap = new Map();
         const finalDetalleMapa = {};
-        // Updated parseCurrency to handle locale-specific formatting (e.g., thousands dot, decimal comma)
         const parseCurrency = (str) => {
-            let cleanStr = String(str).replace(/[^0-9.,-]+/g, ''); // Allow comma and dot
-            cleanStr = cleanStr.replace(/\./g, ''); // Remove thousands separator (dots)
-            cleanStr = cleanStr.replace(/,/g, '.'); // Replace decimal comma with dot
+            let cleanStr = String(str).replace(/[^0-9.,-]+/g, '');
+            cleanStr = cleanStr.replace(/\./g, '');
+            cleanStr = cleanStr.replace(/,/g, '.');
             return parseFloat(cleanStr) || 0;
         };
 
-        for (const res of responses) {
-            if (res.detalle_mapa) {
-                for (const responsable in res.detalle_mapa) {
-                    if (!finalDetalleMapa[responsable]) {
-                        finalDetalleMapa[responsable] = {}; // Initialize as an object
+            for (const res of responses) {
+                // [NUEVO] Si una de las respuestas mensuales trae un error controlado desde el backend,
+                // se registra en la consola y se salta, permitiendo que los demás meses se procesen.
+                if (res.error) {
+                    console.warn('Se omitió un período debido a un error en el backend:', res.error);
+                    continue;
+                }
+        
+                if (res.detalle_mapa) {                if (reporte === 'erp' || reporte === 'erp_proceso' || reporte === 'glosas_sin_radicar') {
+                    for (const key in res.detalle_mapa) {
+                        if (!finalDetalleMapa[key]) {
+                            finalDetalleMapa[key] = [];
+                        }
+                        finalDetalleMapa[key] = finalDetalleMapa[key].concat(res.detalle_mapa[key]);
                     }
-                    // Iterate through the eventoKeys for this responsable in the current month's response
-                    for (const eventoKey in res.detalle_mapa[responsable]) {
-                        if (!finalDetalleMapa[responsable][eventoKey]) {
-                            // If this eventoKey doesn't exist yet, just assign it
-                            finalDetalleMapa[responsable][eventoKey] = res.detalle_mapa[responsable][eventoKey];
-                        } else {
-                            // If it exists, concatenate the 'items' arrays
-                            finalDetalleMapa[responsable][eventoKey].items = finalDetalleMapa[responsable][eventoKey].items.concat(res.detalle_mapa[responsable][eventoKey].items);
+                } else {
+                    for (const responsable in res.detalle_mapa) {
+                        if (!finalDetalleMapa[responsable]) {
+                            finalDetalleMapa[responsable] = {};
+                        }
+                        for (const eventoKey in res.detalle_mapa[responsable]) {
+                            const currentEvent = res.detalle_mapa[responsable][eventoKey];
+                            if (!finalDetalleMapa[responsable][eventoKey]) {
+                                finalDetalleMapa[responsable][eventoKey] = {
+                                    ...currentEvent,
+                                    items: Array.isArray(currentEvent.items) ? [...currentEvent.items] : []
+                                };
+                            } else {
+                                const existingItems = Array.isArray(finalDetalleMapa[responsable][eventoKey].items) ? finalDetalleMapa[responsable][eventoKey].items : [];
+                                const newItems = Array.isArray(currentEvent.items) ? currentEvent.items : [];
+                                finalDetalleMapa[responsable][eventoKey].items = existingItems.concat(newItems);
+                            }
                         }
                     }
                 }
             }
 
             if (res.data) {
-                for (const item of res.data) {
-                    const key = item.responsable;
-                    if (!aggregatedDataMap.has(key)) {
-                        const newItem = JSON.parse(JSON.stringify(item)); // Deep copy
-                        // Parse numbers and currency strings to numbers for initial setting
-                        newItem.cantidad_glosas_ingresadas = parseInt(String(newItem.cantidad_glosas_ingresadas).replace(/[^0-9]/g, ''), 10) || 0;
-                        newItem.total_items = parseInt(String(newItem.total_items).replace(/[^0-9]/g, ''), 10) || 0;
-                        newItem.valor_total_glosas = parseCurrency(newItem.valor_total_glosas);
-                        newItem.valor_glosado = parseCurrency(newItem.valor_glosado);
-                        newItem.valor_aceptado = parseCurrency(newItem.valor_aceptado);
-                        newItem.valor_total_items = parseCurrency(newItem.valor_total_items);
-                        if (newItem.desglose_ratificacion) {
-                            for(const estado in newItem.desglose_ratificacion) {
-                                newItem.desglose_ratificacion[estado].valor = parseCurrency(newItem.desglose_ratificacion[estado].valor);
-                            }
+                if (reporte === 'glosas_sin_radicar') {
+                    for (const item of res.data) {
+                        const key = item.tercero_nombre;
+                        if (!aggregatedDataMap.has(key)) {
+                            aggregatedDataMap.set(key, { ...item });
+                        } else {
+                            const existingData = aggregatedDataMap.get(key);
+                            existingData.total_glosas += item.total_glosas;
+                            existingData.con_cuenta += item.con_cuenta;
+                            existingData.sin_cuenta += item.sin_cuenta;
                         }
-                        aggregatedDataMap.set(key, newItem);
-                    } else {
-                        const responsableData = aggregatedDataMap.get(key);
-                        responsableData.cantidad_glosas_ingresadas += parseInt(String(item.cantidad_glosas_ingresadas).replace(/[^0-9]/g, ''), 10) || 0;
-                        responsableData.total_items += parseInt(String(item.total_items).replace(/[^0-9]/g, ''), 10) || 0;
-                        responsableData.valor_total_glosas += parseCurrency(item.valor_total_glosas);
-                        responsableData.valor_glosado += parseCurrency(item.valor_glosado);
-                        responsableData.valor_aceptado += parseCurrency(item.valor_aceptado);
-                        responsableData.valor_total_items += parseCurrency(item.valor_total_items);
+                    }
+                } else if (reporte === 'erp' || reporte === 'erp_proceso') {
+                    for (const item of res.data) {
+                        const key = item.responsable;
+                        const existing = aggregatedDataMap.get(key);
 
-                        if (item.desglose_ratificacion) {
-                            for (const estado in item.desglose_ratificacion) {
-                                if (!responsableData.desglose_ratificacion[estado]) {
-                                    responsableData.desglose_ratificacion[estado] = { cantidad_facturas: 0, cantidad: 0, valor: 0.0 };
+                        if (!existing) {
+                            // Si es la primera vez que vemos a este responsable, clonamos el item y lo guardamos.
+                            // Nos aseguramos de que los valores sean numéricos para futuras sumas.
+                            const newItem = JSON.parse(JSON.stringify(item));
+                            newItem.total_documentos = Number(newItem.total_documentos) || 0;
+                            newItem.total_facturas_radicadas = Number(newItem.total_facturas_radicadas) || 0;
+                            newItem.total_aceptado = Number(newItem.total_aceptado) || 0;
+                            newItem.total_refutado = Number(newItem.total_refutado) || 0;
+                            newItem.total_conciliado = Number(newItem.total_conciliado) || 0;
+                            aggregatedDataMap.set(key, newItem);
+                        } else {
+                            // Si ya existe, sumamos los valores del item actual a los totales guardados.
+                            existing.total_documentos += Number(item.total_documentos) || 0;
+                            existing.total_facturas_radicadas += Number(item.total_facturas_radicadas) || 0;
+                            existing.total_aceptado += Number(item.total_aceptado) || 0;
+                            existing.total_refutado += Number(item.total_refutado) || 0;
+                            existing.total_conciliado += Number(item.total_conciliado) || 0;
+                        }
+                    }
+                } else {
+                    for (const item of res.data) {
+                        const key = item.responsable;
+                        if (!aggregatedDataMap.has(key)) {
+                            const newItem = JSON.parse(JSON.stringify(item));
+                            newItem.cantidad_glosas_ingresadas = parseInt(String(newItem.cantidad_glosas_ingresadas).replace(/[^0-9]/g, ''), 10) || 0;
+                            newItem.total_items = parseInt(String(newItem.total_items).replace(/[^0-9]/g, ''), 10) || 0;
+                            newItem.valor_total_glosas = parseCurrency(newItem.valor_total_glosas);
+                            newItem.valor_glosado = parseCurrency(newItem.valor_glosado);
+                            newItem.valor_aceptado = parseCurrency(newItem.valor_aceptado);
+                            newItem.valor_total_items = parseCurrency(newItem.valor_total_items);
+                            if (newItem.desglose_ratificacion) {
+                                for(const estado in newItem.desglose_ratificacion) {
+                                    newItem.desglose_ratificacion[estado].valor = parseCurrency(newItem.desglose_ratificacion[estado].valor);
                                 }
-                                responsableData.desglose_ratificacion[estado].cantidad_facturas += parseInt(String(item.desglose_ratificacion[estado].cantidad_facturas).replace(/[^0-9]/g, ''), 10) || 0;
-                                responsableData.desglose_ratificacion[estado].cantidad += parseInt(String(item.desglose_ratificacion[estado].cantidad).replace(/[^0-9]/g, ''), 10) || 0;
-                                responsableData.desglose_ratificacion[estado].valor += parseCurrency(item.desglose_ratificacion[estado].valor);
+                            }
+                            aggregatedDataMap.set(key, newItem);
+                        } else {
+                            const responsableData = aggregatedDataMap.get(key);
+                            responsableData.cantidad_glosas_ingresadas += parseInt(String(item.cantidad_glosas_ingresadas).replace(/[^0-9]/g, ''), 10) || 0;
+                            responsableData.total_items += parseInt(String(item.total_items).replace(/[^0-9]/g, ''), 10) || 0;
+                            responsableData.valor_total_glosas += parseCurrency(item.valor_total_glosas);
+                            responsableData.valor_glosado += parseCurrency(item.valor_glosado);
+                            responsableData.valor_aceptado += parseCurrency(item.valor_aceptado);
+                            responsableData.valor_total_items += parseCurrency(item.valor_total_items);
+
+                            if (item.desglose_ratificacion) {
+                                for (const estado in item.desglose_ratificacion) {
+                                    if (!responsableData.desglose_ratificacion[estado]) {
+                                        responsableData.desglose_ratificacion[estado] = { cantidad_facturas: 0, cantidad: 0, valor: 0.0 };
+                                    }
+                                    responsableData.desglose_ratificacion[estado].cantidad_facturas += parseInt(String(item.desglose_ratificacion[estado].cantidad_facturas).replace(/[^0-9]/g, ''), 10) || 0;
+                                    responsableData.desglose_ratificacion[estado].cantidad += parseInt(String(item.desglose_ratificacion[estado].cantidad).replace(/[^0-9]/g, ''), 10) || 0;
+                                    responsableData.desglose_ratificacion[estado].valor += parseCurrency(item.desglose_ratificacion[estado].valor);
+                                }
                             }
                         }
                     }
@@ -168,49 +222,45 @@ document.addEventListener('DOMContentLoaded', () => {
 
         const finalData = Array.from(aggregatedDataMap.values());
 
-        // Define a formatter for currency that removes .00 for whole numbers
+        if (reporte === 'glosas_sin_radicar' || reporte === 'erp' || reporte === 'erp_proceso') {
+            return { data: finalData, detalle_mapa: finalDetalleMapa };
+        }
+
         const currencyFormatter = new Intl.NumberFormat('es-CO', {
             style: 'currency',
             currency: 'COP',
-            minimumFractionDigits: 0, // Allow 0 decimal places
-            maximumFractionDigits: 2  // Allow up to 2 decimal places
+            minimumFractionDigits: 0,
+            maximumFractionDigits: 2
         });
 
-        // Define a formatter for quantities that removes .00 for whole numbers
         const quantityFormatter = new Intl.NumberFormat('es-CO', {
-            minimumFractionDigits: 0, // Allow 0 decimal places
-            maximumFractionDigits: 2  // Allow up to 2 decimal places
+            minimumFractionDigits: 0,
+            maximumFractionDigits: 2
         });
 
-        // Recalculate cantidad_glosas_ingresadas and total_items based on the aggregated finalDetalleMapa
         finalData.forEach(item => {
             const responsableDetalles = finalDetalleMapa[item.responsable];
-            let totalGlosasIngresadasCalculated = 0; // This will be the count of unique eventoKeys
-            let totalItemsCalculated = 0; // This will be the sum of items.length for all eventoKeys
+            let totalGlosasIngresadasCalculated = 0;
+            let totalItemsCalculated = 0;
 
             if (responsableDetalles) {
-                totalGlosasIngresadasCalculated = Object.keys(responsableDetalles).length; // Count of unique eventoKeys
+                totalGlosasIngresadasCalculated = Object.keys(responsableDetalles).length;
 
                 for (const eventoKey in responsableDetalles) {
                     if (responsableDetalles[eventoKey] && Array.isArray(responsableDetalles[eventoKey].items)) {
-                        totalItemsCalculated += responsableDetalles[eventoKey].items.length; // Sum of individual glosses
+                        totalItemsCalculated += responsableDetalles[eventoKey].items.length;
                     }
                 }
             }
             item.cantidad_glosas_ingresadas = totalGlosasIngresadasCalculated;
-            item.total_items = totalItemsCalculated; // Ensure total_items is also correctly derived
+            item.total_items = totalItemsCalculated;
 
-            // Recalculate promedios based on aggregated totals and divisor
             if (divisor > 0) {
                 const totalGlosas = item.cantidad_glosas_ingresadas;
-                const totalValor = parseCurrency(item.valor_total_glosas); // Parse back to number for calculation
+                const totalValor = parseCurrency(item.valor_total_glosas);
 
-                let formattedPromedioCantidad;
-                let formattedPromedioValor;
-
-                // The logic for daily vs monthly/annual formatting is now unified using the formatters
-                formattedPromedioCantidad = quantityFormatter.format(totalGlosas / divisor);
-                formattedPromedioValor = currencyFormatter.format(totalValor / divisor);
+                let formattedPromedioCantidad = quantityFormatter.format(totalGlosas / divisor);
+                let formattedPromedioValor = currencyFormatter.format(totalValor / divisor);
 
                 console.log(`aggregateMonthlyData: Assigning promedios.periodo as ${periodoType} for item ${item.responsable}`);
                 item.promedios = {
@@ -219,17 +269,12 @@ document.addEventListener('DOMContentLoaded', () => {
                     promedio_valor: formattedPromedioValor
                 };
             } else {
-                item.promedios = null; // Or an empty object if no months
+                item.promedios = null;
             }
         });
 
-        // The main formatter for other values (already defined as currencyFormatter)
-        // We can reuse currencyFormatter for item.valor_total_glosas etc.
-        // The existing formatter variable is named 'formatter', let's rename it to 'mainCurrencyFormatter' for clarity
         const mainCurrencyFormatter = new Intl.NumberFormat('es-CO', { style: 'currency', currency: 'COP', minimumFractionDigits: 0, maximumFractionDigits: 2 });
 
-
-        // Format numbers back to currency strings for rendering
         finalData.forEach(item => {
             item.valor_total_glosas = mainCurrencyFormatter.format(item.valor_total_glosas);
             item.valor_glosado = mainCurrencyFormatter.format(item.valor_glosado);
@@ -240,10 +285,6 @@ document.addEventListener('DOMContentLoaded', () => {
                     item.desglose_ratificacion[estado].valor = mainCurrencyFormatter.format(item.desglose_ratificacion[estado].valor);
                 }
             }
-            // Promedios values are already formatted within the loop above, so this part can be removed or adjusted if needed.
-            // if (item.promedios && item.promedios.promedio_valor) {
-            //     item.promedios.promedio_valor = formatter.format(parseFloat(item.promedios.promedio_valor));
-            // }
         });
 
         console.log('aggregateMonthlyData: Returning aggregated data. First item promedios.periodo:', finalData[0]?.promedios?.periodo);
@@ -313,7 +354,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 responses = await Promise.all(fetchPromises);
             }
 
-            const aggregatedData = aggregateMonthlyData(responses, divisor, periodoType);
+            const aggregatedData = aggregateMonthlyData(responses, divisor, periodoType, reporte);
 
             // Create a deep copy of aggregatedData before further processing and rendering
             const clonedAggregatedData = JSON.parse(JSON.stringify(aggregatedData));
@@ -339,6 +380,25 @@ document.addEventListener('DOMContentLoaded', () => {
             dashboardContainer.innerHTML += `<div class="col-span-full text-center text-gray-500 p-8 bg-gray-50 rounded-lg shadow-inner">No se encontraron datos para el reporte de '${reporte}' en el período seleccionado.</div>`;
         } else {
             console.log('renderContent: Data received. First item promedios.periodo:', responseData.data[0]?.promedios?.periodo);
+            
+            // [NUEVO] Mostrar Resumen General si existe (para Ingreso y Analistas)
+            if (responseData.resumen_general) {
+                const { total_glosas, total_monto } = responseData.resumen_general;
+                const resumenHTML = `
+                    <div class="col-span-full bg-blue-600 text-white p-6 rounded-lg shadow-lg mb-6 flex flex-col md:flex-row justify-around items-center">
+                        <div class="text-center mb-4 md:mb-0">
+                            <h3 class="text-lg font-montserrat font-semibold opacity-90 uppercase tracking-widest">Total Glosas</h3>
+                            <p class="text-4xl font-bold mt-1">${total_glosas.toLocaleString('es-CO')}</p>
+                        </div>
+                        <div class="text-center">
+                            <h3 class="text-lg font-montserrat font-semibold opacity-90 uppercase tracking-widest">Monto Total</h3>
+                            <p class="text-4xl font-bold mt-1">${total_monto}</p>
+                        </div>
+                    </div>
+                `;
+                dashboardContainer.innerHTML += resumenHTML;
+            }
+
             switch (reporte) {
                 case 'ingreso':
                 case 'analistas':

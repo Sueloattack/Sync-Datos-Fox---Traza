@@ -30,6 +30,25 @@ try {
         $estatus_aceptado_analistas
     );
     
+    // Calcular Totales Generales
+    $total_cantidad = 0;
+    $total_monto = 0;
+    
+    if (isset($respuestaFinal['data']) && is_array($respuestaFinal['data'])) {
+        foreach ($respuestaFinal['data'] as $row) {
+            $total_cantidad += (int)($row['cantidad_glosas_ingresadas'] ?? 0); // En analistas la clave es la misma segun engine
+            
+            $montoStr = $row['valor_total_glosas'] ?? '0';
+            $montoClean = str_replace(['$', '.', ' '], '', $montoStr);
+            $total_monto += (float)$montoClean;
+        }
+    }
+
+    $respuestaFinal['resumen_general'] = [
+        'total_glosas' => $total_cantidad,
+        'total_monto' => '$' . number_format($total_monto, 0, ',', '.')
+    ];
+
     // Devuelve la respuesta como JSON
     echo json_encode($respuestaFinal);
     
